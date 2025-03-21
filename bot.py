@@ -163,7 +163,7 @@ async def view_users(interaction: discord.Interaction):
 		member = interaction.member
 	else:
 		try:
-			member await interaction.guild.fetch_member(interaction.user.id)
+			member = await interaction.guild.fetch_member(interaction.user.id)
 		except Exception:
 			await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
 	
