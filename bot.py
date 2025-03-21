@@ -152,10 +152,24 @@ async def onboarding(interaction: discord.Interaction, country: str):
 # /view_users command for admins only
 @bot.tree.command(name="view_users", description="View all onboarded users (Admin only)")
 async def view_users(interaction: discord.Interaction):
-	# Check if the user has administrator permissions
-	if not interaction.user.guild_permissions.administrator:
-		await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+	# Check if the command is running in a server
+	if interaction.guild is None:
+		await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
 		return
+	
+	# Retrieve the member object from the guild
+	member = interaction.guild.get_member(interaction.user.id)
+	if member is None:
+		try:
+			member = await interaction.guild.fetch_member(interaction.user.id)
+		except Exception:
+			await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
+			return
+	
+	if not member.guild_permissions.administrator:
+		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+		return
+	
 	cursor.execute("SELECT * FROM users")
 	rows = cursor.fetchall()
 	if not rows:
