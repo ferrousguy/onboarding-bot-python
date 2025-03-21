@@ -159,13 +159,17 @@ async def view_users(interaction: discord.Interaction):
 		return
 	
 	# Retrieve the member object from the guild
-	if hasattr(interaction, "member") and interaction.member is not None:
+	if interaction.member is not None:
 		member = interaction.member
 	else:
 		try:
 			member = await interaction.guild.fetch_member(interaction.user.id)
-		except Exception:
+		except Exception as e:
+			print(f"Error fetching member: {e}")
 			await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
+			return
+	
+	print(f"Retrieved member: {member} with roles: {[role.name for role in member.roles]}")
 	
 	if not any(role.name == "Admin" for role in member.roles):
 		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
@@ -204,8 +208,9 @@ async def view_users(interaction: discord.Interaction):
 async def on_ready():
 	print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 	try:
-		synced = await bot.tree.sync()
-		print(f"Synced {len(synced)} commands")
+		guild = discord.Object(id=878003622917587034)
+		synced = await bot.tree.sync(guild=guild)
+		print(f"Synced {len(synced)} commands to guild {guild.id}")
 	except Exception as e:
 		print(e)
 
