@@ -159,10 +159,13 @@ async def view_users(interaction: discord.Interaction):
 		return
 	
 	# Retrieve the member object from the guild
-	member = interaction.member
-	if member is None:
-		await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
-		return
+	if hasattr(interaction, "member") and interaction.member is not None:
+		member = interaction.member
+	else:
+		try:
+			member await interaction.guild.fetch_member(interaction.user.id)
+		except Exception:
+			await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
 	
 	if not any(role.name == "Admin" for role in member.roles):
 		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
