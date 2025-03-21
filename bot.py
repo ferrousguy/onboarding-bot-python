@@ -206,6 +206,10 @@ async def view_users(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
 	print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+	print(f"Bot is a member of the following guilds:")
+	for guild in bot.guilds:
+		print(f"{guild.name} (ID: {guild.id})")
+		
 	try:
 		guild = discord.Object(id=878003622917587034)
 		synced = await bot.tree.sync(guild=guild)
