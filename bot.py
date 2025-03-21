@@ -12,6 +12,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_PATH = "./data/database.sqlite"
 
+if BOT_TOKEN is None:
+	raise ValueError("DISCORD_TOKEN environment variable not set")
+
 # Ensure data directory exists
 if not os.path.exists("data"):
 	os.makedirs("data")
