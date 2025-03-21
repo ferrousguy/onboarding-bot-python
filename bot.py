@@ -159,9 +159,8 @@ async def view_users(interaction: discord.Interaction):
 		return
 	
 	# Retrieve the member object from the guild
-	if interaction.member is not None:
-		member = interaction.member
-	else:
+	member = getattr(interaction, "member", None)
+	if member is None:
 		try:
 			member = await interaction.guild.fetch_member(interaction.user.id)
 		except Exception as e:
