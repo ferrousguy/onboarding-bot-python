@@ -6,31 +6,82 @@ import os
 import io
 import csv
 from dotenv import load_dotenv
+from contextlib import contextmanager
+
+class DatabaseManager:
+	def __init__(self, database_path):
+		self.database_path = database_path
+		self._ensure_database_directory()
+		self._initialize_database()
+
+	def _ensure_database_directory(self):
+		"""Ensure the directory for the database exists."""
+		directory = os.path.dirname(self.database_path)
+		if directory and not os.path.exists(directory):
+			os.makedirs(directory)
+
+	def _initialize_database(self):
+		"""Create the initial database schema if it doesn't exist."""
+		with self.get_connection() as conn:
+			cursor = conn.cursor()
+			cursor.execute("""
+				CREATE TABLE IF NOT EXISTS users (
+					discordId TEXT PRIMARY KEY,
+					country TEXT NOT NULL,
+					interests TEXT NOT NULL,
+					platforms TEXT NOT NULL
+				)
+			""")
+			conn.commit()
+
+	@contextmanager
+	def get_connection(self):
+		"""
+		Context manager for database connections.
+		Ensures connections are properly opened and closed.
+		"""
+		conn = None
+		try:
+			conn = sqlite3.connect(self.database_path, 
+								detect_types=sqlite3.PARSE_DECLTYPES, 
+								timeout=10)
+			yield conn
+		except sqlite3.Error as e:
+			print(f"Database connection error: {e}")
+			if conn:
+				conn.rollback()
+			raise
+		finally:
+			if conn:
+				conn.close()
+
+	def insert_or_update_user(self, discord_id, country, interests="", platforms=""):
+		"""Insert or update a user's information."""
+		with self.get_connection() as conn:
+			cursor = conn.cursor()
+			cursor.execute(
+				"INSERT OR REPLACE INTO users (discordId, country, interests, platforms) VALUES (?, ?, ?, ?)",
+				(discord_id, country, interests, platforms)
+			)
+			conn.commit()
+
+	def get_all_users(self):
+		"""Retrieve all users from the database."""
+		with self.get_connection() as conn:
+			cursor = conn.cursor()
+			cursor.execute("SELECT * FROM users")
+			return cursor.fetchall()
 
 # Load environment variables from .env file
 load_dotenv()
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
-DATABASE_PATH = "./data/database.sqlite"
 
 if BOT_TOKEN is None:
 	raise ValueError("DISCORD_TOKEN environment variable not set")
-
-# Ensure data directory exists
-if not os.path.exists("data"):
-	os.makedirs("data")
-
-# Setup SQLite database
-conn = sqlite3.connect(DATABASE_PATH)
-cursor = conn.cursor()
-cursor.execute("""
-	CREATE TABLE IF NOT EXISTS users (
-		discordId TEXT PRIMARY KEY,
-		country TEXT NOT NULL,
-		interests TEXT NOT NULL,
-		platforms TEXT NOT NULL
-	)
-""")
-conn.commit()
+	
+# Initialize the database manager
+DATABASE_PATH = os.getenv("DATABASE_PATH", "./data/database.sqlite")
+db_manager = DatabaseManager(DATABASE_PATH)
 
 # Define static data
 countries = [
@@ -103,10 +154,26 @@ class InvolvementSelect(discord.ui.Select):
 	async def callback(self, interaction: discord.Interaction):
 		selected_interests = ",".join(self.values)
 		user_id = str(interaction.user.id)
-		cursor.execute("UPDATE users SET interests = ? WHERE discordId = ?", (selected_interests, user_id))
-		conn.commit()
+		
+		# Retrieve current user data first
+		with db_manager.get_connection() as conn:
+			cursor = conn.cursor()
+			cursor.execute("SELECT country FROM users WHERE discordId = ?", (user_id,))
+			current_user = cursor.fetchone()
+		
+		if current_user:
+			# Update interests while preserving other data
+			db_manager.insert_or_update_user(
+				discord_id=user_id, 
+				country=current_user[0], 
+				interests=selected_interests
+			)
+		
 		view = PlatformSelectView()
-		await interaction.response.edit_message(content="Saved your interests. Now, what platforms are you working with?", view=view)
+		await interaction.response.edit_message(
+			content="Saved your interests. Now, what platforms are you working with?", 
+			view=view
+		)
 
 class InvolvementSelectView(discord.ui.View):
 	def __init__(self, timeout=180):
@@ -141,14 +208,20 @@ class PlatformSelectView(discord.ui.View):
 @app_commands.autocomplete(country=country_autocomplete)
 async def onboarding(interaction: discord.Interaction, country: str):
 	user_id = str(interaction.user.id)
-	# Insert or update the user record in the database
-	cursor.execute(
-		"INSERT OR REPLACE INTO users (discordId, country, interests, platforms) VALUES (?, ?, ?, ?)",
-		(user_id, country, "", "")
+	
+	db_manager.insert_or_update_user(
+		discord_id=user_id,
+		country=country,
+		interests="",
+		platforms=""
 	)
-	conn.commit()
+
 	view = InvolvementSelectView()
-	await interaction.response.send_message(content=f"You selected **{country}**. Now, what are you interested in? (Select all that apply)", view=view, ephemeral=True)
+	await interaction.response.send_message(
+		content=f"You selected **{country}**. Now, what are you interested in? (Select all that apply)",
+		view=view,
+		ephemeral=True
+	)
 
 # /view_users command for admins only
 @bot.tree.command(name="view_users", description="View all onboarded users (Admin only)")
@@ -159,32 +232,43 @@ async def view_users(interaction: discord.Interaction):
 		return
 	
 	# Retrieve the member object from the guild
-	member = getattr(interaction, "member", None)
-	if member is None:
-		try:
-			member = await interaction.guild.fetch_member(interaction.user.id)
-		except Exception as e:
-			print(f"Error fetching member: {e}")
-			await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
-			return
+	try:
+		member = interaction.user
+		guild_member = await interaction.guild.fetch_member(member.id)
+	except Exception as e:
+		print(f"Error fetching member: {e}")
+		await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
+		return
 	
-	print(f"Retrieved member: {member} with roles: {[role.name for role in member.roles]}")
-	
-	if not any(role.name == "Admin" for role in member.roles):
+	is_admin = any(role.name.lower() == "admin" for role in guild_member.roles)
+	if not is_admin:
 		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
 		return
 	
-	cursor.execute("SELECT * FROM users")
-	rows = cursor.fetchall()
+	try:
+		rows = db_manager.get_all_users()
+	except sqlite3.Error as e:
+		print(f"Database error: {e}")
+		await interaction.response.send_message("Error accessing user database.", ephemeral=True)
+		return
+	finally:
+		# Always close the connection
+		if conn:
+			conn.close()
+	
 	if not rows:
 		await interaction.response.send_message("No users found in the database.", ephemeral=True)
 		return
+	
+	# Create embed
 	embed = discord.Embed(title="Onboarded Users", color=0x0099ff)
 	description_lines = []
 	for row in rows:
 		discord_id, country, interests, platforms = row
 		description_lines.append(f"👤 <@{discord_id}> - **{country}** - **Interests:** {interests} - **Platforms:** {platforms}")
 	description = "\n".join(description_lines)
+	
+	# Truncate description if too long
 	if len(description) > 4096:
 		description = description[:4093] + "..."
 	embed.description = description
@@ -192,15 +276,19 @@ async def view_users(interaction: discord.Interaction):
 	embed.timestamp = discord.utils.utcnow()
 	
 	# Create CSV content in memory
-	csv_buffer = io.StringIO()
-	writer = csv.writer(csv_buffer)
-	writer.writerow(["Discord ID", "Country", "Interests", "Platforms"])
-	for row in rows:
-		writer.writerow(row)
-	csv_buffer.seek(0)
-	file = discord.File(fp=io.BytesIO(csv_buffer.read().encode()), filename="user_data.csv")
-	
-	await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+	try:
+		csv_buffer = io.StringIO()
+		writer = csv.writer(csv_buffer)
+		writer.writerow(["Discord ID", "Country", "Interests", "Platforms"])
+		for row in rows:
+			writer.writerow(row)
+		csv_buffer.seek(0)
+		file = discord.File(fp=io.BytesIO(csv_buffer.read().encode()), filename="user_data.csv")
+		
+		await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+	except Exception as e:
+		print(f"Error creating CSV: {e}")
+		await interaction.response.send_message("Error generating CSV file.", ephemeral=True)
 
 # --- On Ready ---
 @bot.event
