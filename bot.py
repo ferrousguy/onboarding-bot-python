@@ -242,6 +242,7 @@ async def view_users(interaction: discord.Interaction):
 		await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
 		return
 	
+	# Check that user is a member of the admin role
 	is_admin = any(role.name.lower() == "admin" for role in guild_member.roles)
 	if not is_admin:
 		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
