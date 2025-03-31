@@ -1,76 +1,10 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import sqlite3
 import os
-import io
-import csv
+import gspread
+from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
-from contextlib import contextmanager
-
-class DatabaseManager:
-	def __init__(self, database_path):
-		self.database_path = database_path
-		self._ensure_database_directory()
-		self._initialize_database()
-
-	def _ensure_database_directory(self):
-		"""Ensure the directory for the database exists."""
-		directory = os.path.dirname(self.database_path)
-		if directory and not os.path.exists(directory):
-			os.makedirs(directory)
-
-	def _initialize_database(self):
-		"""Create the initial database schema if it doesn't exist."""
-		with self.get_connection() as conn:
-			cursor = conn.cursor()
-			cursor.execute("""
-				CREATE TABLE IF NOT EXISTS users (
-					discordId TEXT PRIMARY KEY,
-					country TEXT NOT NULL,
-					interests TEXT NOT NULL,
-					platforms TEXT NOT NULL
-				)
-			""")
-			conn.commit()
-
-	@contextmanager
-	def get_connection(self):
-		"""
-		Context manager for database connections.
-		Ensures connections are properly opened and closed.
-		"""
-		conn = None
-		try:
-			conn = sqlite3.connect(self.database_path, 
-								detect_types=sqlite3.PARSE_DECLTYPES, 
-								timeout=10)
-			yield conn
-		except sqlite3.Error as e:
-			print(f"Database connection error: {e}")
-			if conn:
-				conn.rollback()
-			raise
-		finally:
-			if conn:
-				conn.close()
-
-	def insert_or_update_user(self, discord_id, country, interests="", platforms=""):
-		"""Insert or update a user's information."""
-		with self.get_connection() as conn:
-			cursor = conn.cursor()
-			cursor.execute(
-				"INSERT OR REPLACE INTO users (discordId, country, interests, platforms) VALUES (?, ?, ?, ?)",
-				(discord_id, country, interests, platforms)
-			)
-			conn.commit()
-
-	def get_all_users(self):
-		"""Retrieve all users from the database."""
-		with self.get_connection() as conn:
-			cursor = conn.cursor()
-			cursor.execute("SELECT * FROM users")
-			return cursor.fetchall()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -79,9 +13,113 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 if BOT_TOKEN is None:
 	raise ValueError("DISCORD_TOKEN environment variable not set")
 	
-# Initialize the database manager
-DATABASE_PATH = os.getenv("DATABASE_PATH", "./data/database.sqlite")
-db_manager = DatabaseManager(DATABASE_PATH)
+# Define the scope for Google Sheets API
+SCOPES = [
+	"https://www.googleapis.com/auth/spreadsheets",
+	"https://www.googleapis.com/auth/drive"
+]
+
+class GoogleSheetsManager:
+	def __init__(self):
+		self.credentials = None
+		self.spreadsheet = None
+		self.worksheet = None
+		self._initialize_google_sheets()
+	
+	def _initialize_google_sheets(self):
+		"""Initialize Google Sheets connection with service account credentials."""
+		try:
+			# Try to load credentials from environment variable
+			service_account_info = os.getenv("GOOGLE_CREDENTIALS")
+			if service_account_info:
+				import json
+				service_account_dict = json.loads(service_account_info)
+				self.credentials = Credentials.from_service_account_info(
+					service_account_dict, scopes=SCOPES
+				)
+			else:
+				# Fall back to credentials file
+				credentials_path = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+				self.credentials = Credentials.from_service_account_file(
+					credentials_path, scopes=SCOPES
+				)
+			
+			# Connect to Google Sheets
+			self.client = gspread.authorize(self.credentials)
+			
+			# Get spreadsheet by ID or create it if needed
+			spreadsheet_id = os.getenv("GOOGLE_SHEET_ID")
+			if spreadsheet_id:
+				self.spreadsheet = self.client.open_by_key(spreadsheet_id)
+			else:
+				spreadsheet_name = os.getenv("GOOGLE_SHEET_NAME", "Discord Onboarding Data")
+				try:
+					self.spreadsheet = self.client.open(spreadsheet_name)
+				except gspread.exceptions.SpreadsheetNotFound:
+					self.spreadsheet = self.client.create(spreadsheet_name)
+					print(f"Created new spreadsheet: {spreadsheet_name}")
+					print(f"Spreadsheet ID: {self.spreadsheet.id}")
+					print("Please set the GOOGLE_SHEET_ID environment variable to this value")
+			
+			# Get worksheet or create it
+			worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "User Data")
+			try:
+				self.worksheet = self.spreadsheet.worksheet(worksheet_name)
+			except gspread.exceptions.WorksheetNotFound:
+				self.worksheet = self.spreadsheet.add_worksheet(
+					title=worksheet_name, rows=1000, cols=10
+				)
+				
+				# Initialize header row
+				self.worksheet.append_row([
+					"Discord ID", 
+					"Username", 
+					"Country", 
+					"Interests", 
+					"Platforms", 
+					"Timestamp"
+				])
+				
+			print(f"Connected to Google Sheets: {self.spreadsheet.title} / {self.worksheet.title}")
+			
+		except Exception as e:
+			print(f"Error initializing Google Sheets: {e}")
+			raise
+
+	def add_user_data(self, discord_id, username, country, interests, platforms):
+		"""Add a new row with user data to the spreadsheet."""
+		try:
+			from datetime import datetime
+			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+			
+			# Add the row to the spreadsheet
+			self.worksheet.append_row([
+				discord_id,
+				username,
+				country,
+				interests,
+				platforms,
+				timestamp
+			])
+			return True
+		except Exception as e:
+			print(f"Error adding user data: {e}")
+			return False
+		
+	def get_all_users(self):
+		"""Get all user data from the worksheet."""
+		try:
+			# Get all records (excluding header row)
+			return self.worksheet.get_all_records()
+		except Exception as e:
+			print(f"Error getting user data: {e}")
+			return []
+
+# Initialize the Google Sheets manager
+sheets_manager = GoogleSheetsManager()
+
+# Store user data temporarily during onboarding process
+user_data_store = {}
 
 # Define static data
 countries = [
@@ -157,19 +195,9 @@ class InvolvementSelect(discord.ui.Select):
 		selected_interests = ",".join(self.values)
 		user_id = str(interaction.user.id)
 		
-		# Retrieve current user data first
-		with db_manager.get_connection() as conn:
-			cursor = conn.cursor()
-			cursor.execute("SELECT country FROM users WHERE discordId = ?", (user_id,))
-			current_user = cursor.fetchone()
-		
-		if current_user:
-			# Update interests while preserving other data
-			db_manager.insert_or_update_user(
-				discord_id=user_id, 
-				country=current_user[0], 
-				interests=selected_interests
-			)
+		# Update the temporary data store
+		if user_id in user_data_store:
+			user_data_store[user_id]["interests"] = selected_interests
 		
 		view = PlatformSelectView()
 		await interaction.response.edit_message(
@@ -193,9 +221,39 @@ class PlatformSelect(discord.ui.Select):
 	async def callback(self, interaction: discord.Interaction):
 		selected_platforms = ",".join(self.values)
 		user_id = str(interaction.user.id)
-		cursor.execute("UPDATE users SET platforms = ? WHERE discordId = ?", (selected_platforms, user_id))
-		conn.commit()
-		await interaction.response.edit_message(content=f"Your onboarding is complete!\nPlatforms: {selected_platforms}", view=None)
+		username = interaction.user.display_name
+		
+		# Complete the user data and save to Google Sheets
+		if user_id in user_data_store:
+			user_data = user_data_store[user_id]
+			user_data["platforms"] = selected_platforms
+			
+			# Save to Google Sheets
+			success = sheets_manager.add_user_data(
+				discord_id=user_id,
+				username=username,
+				country=user_data["country"],
+				interests=user_data["interests"],
+				platforms=selected_platforms
+			)
+			
+			if success:
+				# Clean up the temporary storage
+				user_data_store.pop(user_id, None)
+				await interaction.response.edit_message(
+					content=f"Your onboarding is complete!\nThank you for sharing your information.", 
+					view=None
+				)
+			else:
+				await interaction.response.edit_message(
+					content="There was an error saving your information. Please try again or contact an administrator.",
+					view=None
+				)
+		else:
+			await interaction.response.edit_message(
+				content="Your session has expired. Please restart the onboarding process with /onboarding.",
+				view=None
+			)
 
 class PlatformSelectView(discord.ui.View):
 	def __init__(self, timeout=180):
@@ -211,12 +269,12 @@ class PlatformSelectView(discord.ui.View):
 async def onboarding(interaction: discord.Interaction, country: str):
 	user_id = str(interaction.user.id)
 	
-	db_manager.insert_or_update_user(
-		discord_id=user_id,
-		country=country,
-		interests="",
-		platforms=""
-	)
+	# Store initial data in the temporary store
+	user_data_store[user_id] = {
+		"country": country,
+		"interests": "",
+		"platforms": ""
+	}
 
 	view = InvolvementSelectView()
 	await interaction.response.send_message(
@@ -224,74 +282,6 @@ async def onboarding(interaction: discord.Interaction, country: str):
 		view=view,
 		ephemeral=True
 	)
-
-# /view_users command for admins only
-@bot.tree.command(name="view_users", description="View all onboarded users (Admin only)")
-async def view_users(interaction: discord.Interaction):
-	# Check if the command is running in a server
-	if interaction.guild is None:
-		await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
-		return
-	
-	# Retrieve the member object from the guild
-	try:
-		member = interaction.user
-		guild_member = await interaction.guild.fetch_member(member.id)
-	except Exception as e:
-		print(f"Error fetching member: {e}")
-		await interaction.response.send_message("Could not retrieve your member data.", ephemeral=True)
-		return
-	
-	# Check that user is a member of the admin role
-	is_admin = any(role.name.lower() == "admin" for role in guild_member.roles)
-	if not is_admin:
-		await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
-		return
-	
-	try:
-		rows = db_manager.get_all_users()
-	except sqlite3.Error as e:
-		print(f"Database error: {e}")
-		await interaction.response.send_message("Error accessing user database.", ephemeral=True)
-		return
-	finally:
-		# Always close the connection
-		if conn:
-			conn.close()
-	
-	if not rows:
-		await interaction.response.send_message("No users found in the database.", ephemeral=True)
-		return
-	
-	# Create embed
-	embed = discord.Embed(title="Onboarded Users", color=0x0099ff)
-	description_lines = []
-	for row in rows:
-		discord_id, country, interests, platforms = row
-		description_lines.append(f"👤 <@{discord_id}> - **{country}** - **Interests:** {interests} - **Platforms:** {platforms}")
-	description = "\n".join(description_lines)
-	
-	# Truncate description if too long
-	if len(description) > 4096:
-		description = description[:4093] + "..."
-	embed.description = description
-	embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.display_avatar.url)
-	embed.timestamp = discord.utils.utcnow()
-	
-	# Create CSV content in memory
-	try:
-		csv_buffer = io.StringIO()
-		writer = csv.writer(csv_buffer)
-		writer.writerow(["Discord ID", "Country", "Interests", "Platforms"])
-		for row in rows:
-			writer.writerow(row)
-		csv_buffer.seek(0)
-		file = discord.File(fp=io.BytesIO(csv_buffer.read().encode()), filename="user_data.csv")
-		
-		await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
-	except Exception as e:
-		print(f"Error creating CSV: {e}")
-		await interaction.response.send_message("Error generating CSV file.", ephemeral=True)
 
 # --- On Ready ---
 @bot.event
