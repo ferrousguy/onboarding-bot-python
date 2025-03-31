@@ -75,9 +75,11 @@ class GoogleSheetsManager:
 					"Discord ID", 
 					"Username", 
 					"Country", 
-					"Interests", 
-					"Platforms", 
-					"Timestamp"
+					"Community Interests", 
+					"Platforms",
+					"App Link",
+					"Full Name", 
+					"Onboarding Completed On"
 				])
 				
 			print(f"Connected to Google Sheets: {self.spreadsheet.title} / {self.worksheet.title}")
@@ -86,7 +88,7 @@ class GoogleSheetsManager:
 			print(f"Error initializing Google Sheets: {e}")
 			raise
 
-	def add_user_data(self, discord_id, username, country, interests, platforms):
+	def add_user_data(self, discord_id, username, country, interests, platforms, app_link="", full_name=""):
 		"""Add a new row with user data to the spreadsheet."""
 		try:
 			from datetime import datetime
@@ -99,6 +101,8 @@ class GoogleSheetsManager:
 				country,
 				interests,
 				platforms,
+				app_link,
+				full_name,
 				timestamp
 			])
 			return True
@@ -221,12 +225,93 @@ class PlatformSelect(discord.ui.Select):
 	async def callback(self, interaction: discord.Interaction):
 		selected_platforms = ",".join(self.values)
 		user_id = str(interaction.user.id)
+		
+		# Update the temporary data store
+		if user_id in user_data_store:
+			user_data_store[user_id]["platforms"] = selected_platforms
+		
+		# Continue to the app link modal
+		view = AppLinkView()
+		await interaction.response.edit_message(
+			content="Saved your platform choices. Would you like to share a link to your published app (optional)?", 
+			view=view
+		)
+
+class PlatformSelectView(discord.ui.View):
+	def __init__(self, timeout=180):
+		super().__init__(timeout=timeout)
+		self.add_item(PlatformSelect())
+
+class AppLinkModal(discord.ui.Modal, title="App Link (Optional)"):
+	app_link = discord.ui.TextInput(
+		label="Link to App Store/Google Play",
+		placeholder="https://...",
+		required=false,
+		max_length=200
+	)
+	
+	async def on_submit(self, interaction: discord.Interaction):
+		user_id = str(interaction.user.id)
+		
+		# Update the temporary data store
+		if user_id in user_data_store:
+			user_data_store[user_id]["app_link"] = self.app_link.value
+		
+		# Continue to the name modal
+		view = NameView()
+		await interaction.response.edit_message(
+			content="Would you like to share your full name (optional)?",
+			view=view
+		)
+
+class AppLinkButton(discord.ui.Button):
+	def __init__(self):
+		super().__init__(label="Share App Link", style=discord.ButtonStyle.primary)
+		
+	async def callback(self, interaction: discord.Interaction):
+		await interaction.response.send_modal(AppLinkModal())
+
+class SkipAppLinkButton(discord.ui.Button):
+	def __init__(self):
+		super().__init__(label="Skip", style=discord.ButtonStyle.secondary)
+		
+	async def callback(self, interaction: discord.Interaction):
+		user_id = str(interaction.user.id)
+			
+		# Set empty app link in the data store
+		if user_id in user_data_store:
+			user_data_store[user_id]["app_link"] = ""
+			
+		# Continue to the name modal
+		view = NameView()
+		await interaction.response.edit_message(
+			content="Would you like to share your full name (optional)?",
+			view=view
+		)
+
+class AppLinkView(discord.ui.View):
+	def __init__(self, timeout=180):
+		super().__init__(timeout=timeout)
+		self.add_item(AppLinkButton())
+		self.add_item(SkipAppLinkButton())
+
+# --- New Modal for Name ---
+class NameModal(discord.ui.Modal, title="Your Name (Optional)"):
+	full_name = discord.ui.TextInput(
+		label="First and Last Name", 
+		placeholder="John Doe",
+		required=False,
+		max_length=100
+	)
+	
+	async def on_submit(self, interaction: discord.Interaction):
+		user_id = str(interaction.user.id)
 		username = interaction.user.display_name
 		
 		# Complete the user data and save to Google Sheets
 		if user_id in user_data_store:
 			user_data = user_data_store[user_id]
-			user_data["platforms"] = selected_platforms
+			user_data["full_name"] = self.full_name.value
 			
 			# Save to Google Sheets
 			success = sheets_manager.add_user_data(
@@ -234,7 +319,9 @@ class PlatformSelect(discord.ui.Select):
 				username=username,
 				country=user_data["country"],
 				interests=user_data["interests"],
-				platforms=selected_platforms
+				platforms=user_data["platforms"],
+				app_link=user_data.get("app_link", ""),
+				full_name=user_data.get("full_name", "")
 			)
 			
 			if success:
@@ -255,10 +342,60 @@ class PlatformSelect(discord.ui.Select):
 				view=None
 			)
 
-class PlatformSelectView(discord.ui.View):
+class NameButton(discord.ui.Button):
+	def __init__(self):
+		super().__init__(label="Share Full Name", style=discord.ButtonStyle.primary)
+			
+	async def callback(self, interaction: discord.Interaction):
+		await interaction.response.send_modal(NameModal())
+
+class SkipNameButton(discord.ui.Button):
+	def __init__(self):
+		super().__init__(label="Skip", style=discord.ButtonStyle.secondary)
+	
+	async def callback(self, interaction: discord.Interaction):
+		user_id = str(interaction.user.id)
+		username = interaction.user.display_name
+		
+		# Complete the user data and save to Google Sheets
+		if user_id in user_data_store:
+			user_data = user_data_store[user_id]
+			user_data["full_name"] = ""
+			
+			# Save to Google Sheets
+			success = sheets_manager.add_user_data(
+				discord_id=user_id,
+				username=username,
+				country=user_data["country"],
+				interests=user_data["interests"],
+				platforms=user_data["platforms"],
+				app_link=user_data.get("app_link", ""),
+				full_name=""
+			)
+			
+			if success:
+				# Clean up the temporary storage
+				user_data_store.pop(user_id, None)
+				await interaction.response.edit_message(
+					content=f"Your onboarding is complete!\nThank you for sharing your information.", 
+					view=None
+				)
+			else:
+				await interaction.response.edit_message(
+					content="There was an error saving your information. Please try again or contact an administrator.",
+					view=None
+				)
+		else:
+			await interaction.response.edit_message(
+				content="Your session has expired. Please restart the onboarding process with /onboarding.",
+				view=None
+			)
+			
+class NameView(discord.ui.View):
 	def __init__(self, timeout=180):
 		super().__init__(timeout=timeout)
-		self.add_item(PlatformSelect())
+		self.add_item(NameButton())
+		self.add_item(SkipNameButton())
 
 # --- Slash Commands ---
 
@@ -273,7 +410,9 @@ async def onboarding(interaction: discord.Interaction, country: str):
 	user_data_store[user_id] = {
 		"country": country,
 		"interests": "",
-		"platforms": ""
+		"platforms": "",
+		"app_link": "",
+		"full_name": ""
 	}
 
 	view = InvolvementSelectView()
