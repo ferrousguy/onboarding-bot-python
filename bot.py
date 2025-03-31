@@ -244,9 +244,9 @@ class PlatformSelectView(discord.ui.View):
 
 class AppLinkModal(discord.ui.Modal, title="App Link (Optional)"):
 	app_link = discord.ui.TextInput(
-		label="Link to App Store/Google Play",
+		label="Link to App Store/Google Play", 
 		placeholder="https://...",
-		required=false,
+		required=False,
 		max_length=200
 	)
 	
