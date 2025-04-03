@@ -110,6 +110,18 @@ class GoogleSheetsManager:
 			print(f"Error adding user data: {e}")
 			return False
 		
+	def check_user_exists(self, discord_id):
+		"""Check if a user has already completed onboarding."""
+		# Get all Discord IDs from the first column
+		discord_ids = self.worksheet.col_values(1)
+	
+		# Remove header if present and convert to strings
+		if discord_ids and discord_ids[0] == "Discord ID":
+			discord_ids = discord_ids[1:]
+		
+		# Check if the user ID exists in the list
+		return str(discord_id) in discord_ids
+		
 	def get_all_users(self):
 		"""Get all user data from the worksheet."""
 		try:
@@ -397,6 +409,23 @@ class NameView(discord.ui.View):
 		self.add_item(NameButton())
 		self.add_item(SkipNameButton())
 
+class AlreadyOnboardedView(discord.ui.View):
+	def __init__(self, timeout=180):
+		super().__init__(timeout=timeout)
+	
+	@discord.ui.button(label="Continue Anyway", style=discord.ButtonStyle.primary)
+	async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+		# Get the user information
+		user_id = str(interaction.user.id)
+		country = user_data_store[user_id]["country"]
+		
+		# Continue with onboarding process
+		view = InvolvementSelectView()
+		await interaction.response.edit_message(
+			content=f"You selected **{country}**. Now, what are you interested in? (Select all that apply)",
+			view=view
+		)
+
 # --- Slash Commands ---
 
 # /onboarding command with autocomplete for country
@@ -406,21 +435,39 @@ class NameView(discord.ui.View):
 async def onboarding(interaction: discord.Interaction, country: str):
 	user_id = str(interaction.user.id)
 	
-	# Store initial data in the temporary store
-	user_data_store[user_id] = {
-		"country": country,
-		"interests": "",
-		"platforms": "",
-		"app_link": "",
-		"full_name": ""
-	}
+	if sheets_manager.check_user_exists(user_id):
+		# Store initial data in the temporary store
+		user_data_store[user_id] = {
+			"country": country,
+			"interests": "",
+			"platforms": "",
+			"app_link": "",
+			"full_name": ""
+		}
 
-	view = InvolvementSelectView()
-	await interaction.response.send_message(
-		content=f"You selected **{country}**. Now, what are you interested in? (Select all that apply)",
-		view=view,
-		ephemeral=True
-	)
+		# Show message that they've already completed onboarding
+		view = AlreadyOnboardedView()
+		await interaction.response.send_message(
+			content="You have already completed the onboarding process. Would you like to continue and update your information?",
+			view=view,
+			ephemeral=True
+		)
+	else:
+		# New user - store initial data in the temporary store
+		user_data_store[user_id] = {
+			"country": country,
+			"interests": "",
+			"platforms": "",
+			"app_link": "",
+			"full_name": ""
+		}
+
+		view = InvolvementSelectView()
+		await interaction.response.send_message(
+			content=f"You selected **{country}**. Now, what are you interested in? (Select all that apply)",
+			view=view,
+			ephemeral=True
+		)
 
 # --- On Ready ---
 @bot.event
