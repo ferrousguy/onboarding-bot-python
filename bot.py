@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Add role IDs from environment variables
+MEMBER_ROLE_ID = os.getenv("MEMBER_ROLE_ID")
+
 if BOT_TOKEN is None:
 	raise ValueError("DISCORD_TOKEN environment variable not set")
 	
@@ -187,6 +190,29 @@ intents.message_content = True
 intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Helper function to update user roles
+async def update_user_roles(user, guild):
+	"""
+	Update user roles after completing onboarding.
+	Adds Member role.
+	"""
+	try:
+		# Get role objects from their IDs
+		member_role = guild.get_role(int(MEMBER_ROLE_ID)) if MEMBER_ROLE_ID else None
+		
+		if not member_role:
+			print(f"Warning: Member role with ID {MEMBER_ROLE_ID} not found")
+		
+		# Add Member role if not already assigned
+		if member_role and member_role not in user.roles:
+			await user.add_roles(member_role)
+			print(f"Added Member role to user {user.display_name}")
+		
+		return True
+	except Exception as e:
+		print(f"Error updating roles for user {user.display_name}: {e}")
+		return False
+
 # --- Autocomplete for country ---
 async def country_autocomplete(interaction: discord.Interaction, current: str):
 	current_lower = current.lower()
@@ -337,10 +363,16 @@ class NameModal(discord.ui.Modal, title="Your Name (Optional)"):
 			)
 			
 			if success:
+				# Update user role
+				role_updated = await update_user_roles(interaction.user, interaction.guild)
+				role_message = ""
+				if role_updated:
+					role_message = "\nYour role has been updated from Guest to Member."
+
 				# Clean up the temporary storage
 				user_data_store.pop(user_id, None)
 				await interaction.response.edit_message(
-					content=f"Your onboarding is complete!\nThank you for sharing your information.", 
+					content=f"Your onboarding is complete!\nThank you for sharing your information.{role_message}", 
 					view=None
 				)
 			else:
@@ -386,10 +418,16 @@ class SkipNameButton(discord.ui.Button):
 			)
 			
 			if success:
+				# Update user role
+				role_updated = await update_user_roles(interaction.user, interaction.guild)
+				role_message = ""
+				if role_updated:
+					role_message = "\nYour role has been updated from Guest to Member."
+
 				# Clean up the temporary storage
 				user_data_store.pop(user_id, None)
 				await interaction.response.edit_message(
-					content=f"Your onboarding is complete!\nThank you for sharing your information.", 
+					content=f"Your onboarding is complete!\nThank you for sharing your information.{role_message}", 
 					view=None
 				)
 			else:
